@@ -48,6 +48,14 @@ type Subject struct {
 	ClassID int    `json:"class_id"`
 }
 
+type Result struct {
+	StudentID int    `json:"student_id"`
+	SubjectID int    `json:"subject_id"`
+	Score     int    `json:"score"`
+	Term      string `json:"term"`
+	Session   string `json:"session"`
+}
+
 // to be moved later
 var jwtKey = []byte("my_secret_key")
 
@@ -94,6 +102,17 @@ func main() {
 	}))
 
 	http.HandleFunc("/login", loginUser)
+
+	//RESULT ROUTE
+	http.HandleFunc("/results", authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			createResult(w, r)
+		} else if r.Method == "GET" {
+			getResults(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
 
 	log.Println("Server running on port 8080...")
 	log.Fatal(http.ListenAndServe(":8080", nil))
@@ -344,6 +363,7 @@ func createSubject(w http.ResponseWriter, r *http.Request) {
 
 }
 
+// GetSubject dunction
 func getSubjects(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.Query(`
 	SELECT sub.id, sub.name, c.name
@@ -377,4 +397,119 @@ func getSubjects(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(subjects)
+}
+
+// FUNCTION CREATE RESULTS
+func createResult(w http.ResponseWriter, r *http.Request) {
+	var result Result
+
+	err := json.NewDecoder(r.Body).Decode(&result)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if result.Score < 0 || result.Score > 100 {
+		http.Error(w, "Score must be between 0 and 100", http.StatusBadRequest)
+		return
+	}
+
+	query := `
+	
+	INSERT INTO results (student_id, subject_id, score, term, session)
+	VALUES ($1, $2, $3, $4, $5)
+	`
+	_, err = db.Exec(query,
+
+		result.StudentID,
+		result.SubjectID,
+		result.Score,
+		result.Term,
+		result.Session,
+	)
+	/*if err != nil {
+		log.Println("DB Error:", err)
+		http.Error(w, "Could not create result", http.StatusInternalServerError)
+		return
+	}
+	w.Write([]byte("Result created successfully"))*/
+
+	if err != nil {
+		log.Println("DB Error:", err)
+
+		if strings.Contains(err.Error(), "duplicate key") {
+			http.Error(w, "Result already exists for this student, subject, term, and session", http.StatusBadRequest)
+			return
+		}
+
+		http.Error(w, "Could not create result", http.StatusInternalServerError)
+		return
+	}
+}
+
+// FUNCTION GET RESULT
+
+func getResults(w http.ResponseWriter, r *http.Request) {
+
+	rows, err := db.Query(`
+	
+		SELECT
+		r.id,
+		s.first_name,
+		s.last_name,
+		sub.name,
+		r.score,
+		r.term,
+		r.session
+		FROM results r
+		JOIN students s ON r.student_id = s.id
+		JOIN subjects sub ON r.subject_id = sub.id
+	`)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var results []map[string]interface{}
+	for rows.Next() {
+		var id int
+		var firstName, lastName, subjectName, term, session string
+		var score int
+
+		err := rows.Scan(&id, &firstName, &lastName, &subjectName, &score, &term, &session)
+
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		grade := calculateGrade(score)
+
+		results = append(results, map[string]interface{}{
+			"id":      id,
+			"student": firstName + " " + lastName,
+			"subject": subjectName,
+			"score":   score,
+			"grade":   grade,
+			"term":    term,
+			"session": session,
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(results)
+}
+func calculateGrade(score int) string {
+	if score >= 70 {
+		return "A"
+	} else if score >= 60 {
+		return "B"
+	} else if score >= 50 {
+		return "C"
+	} else if score >= 45 {
+		return "D"
+	} else if score >= 40 {
+		return "E"
+	}
+	return "F"
 }
